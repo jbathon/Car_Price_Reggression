@@ -1,0 +1,463 @@
+---
+title: "Project-2_Bathon"
+author: "Bathon (Jaden)"
+date: "11/17/2021"
+output: 
+  html_document:
+    css: "../style.css"
+    toc: true
+    toc_float: true
+    number_sections: false
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, cache = TRUE)
+options(scipen = 999)
+```
+
+```{r imports, include=FALSE}
+library(tidyverse)
+library(ggfortify)
+library(olsrr)
+library(knitr)
+```
+
+```{r dataset}
+cars <- read.csv("CarPriceData.csv")
+```
+
+# Task 0
+
+<p>The goal of this project is to use multiple regression to predict car prices. We are going to clean, engineer and remove data from the given cars data found <a href="https://archive.ics.uci.edu/ml/datasets/Automobile">here</a>. We will the go through the remaining data and create visuals and models. Based on the visuals more data will be removed and a model will be created from the remaining data that helps creates a best fit. The model will then be used to predict 20 unknown prices from the data. After the predictions are made they will be submitted in a competition against other models to see which model is the best.</p>
+
+# Task 1
+
+```{r functions}
+
+RMSE <- function(predict, obs) {
+  RMSE <- sqrt(mean((predict - obs)^2, na.rm = TRUE))
+  return(RMSE)
+}
+
+fixMake <- function(make) {
+  make <- tolower(make)
+  fixed <- c()
+  for (val in make) {
+    switch(val,
+      "alfa-romero" = {
+        fixed <- c(fixed, "alfa-romeo")
+      },
+      "maxda" = {
+        fixed <- c(fixed, "mazda")
+      },
+      "porcshce" = {
+        fixed <- c(fixed, "porsche")
+      },
+      "toyouta" = {
+        fixed <- c(fixed, "toyota")
+      },
+      "vokswagen" = {
+        fixed <- c(fixed, "volkswagen")
+      },
+      "vw" = {
+        fixed <- c(fixed, "volkswagen")
+      },
+      {
+        fixed <- c(fixed, val)
+      }
+    )
+  }
+  return(fixed)
+}
+
+buildIntervals <- function(data, model) {
+  confidence <- as.data.frame(predict.lm(model, newdata = data, interval = "confidence")) %>%
+    rename(confLwr = lwr, confUpr = upr)
+
+  prediction <- as.data.frame(predict.lm(model, newdata = data, interval = "prediction")) %>%
+    rename(predictLwr = lwr, predictUpr = upr) %>%
+    select(predictLwr, predictUpr)
+
+  intervalData <- cbind(data, confidence, prediction)
+
+  return(intervalData)
+}
+```
+  
+## Removing Varibles
+
+```{r}
+cars2 <- cars %>%
+  filter(!is.na(price)) %>%
+  select(
+    -X,
+    -wheelbase,
+    -enginetype,
+    -fuelsystem,
+    -symboling,
+    -stroke,
+    -peakrpm,
+    -boreratio,
+    -doornumber,
+    -cylindernumber,
+    -enginelocation
+  )
+```
+
+
+<ul>
+  <li> `enginetype`: This can be be explained by `enginesize`. </li>
+  <li> `wheelbase`: The data varies greatly and we choose not to use it to predict `price`. </li>
+  <li> `fuelsystem`: There are factors that vary little to one data point. </li>
+  <li> `symboling`: The `price` is not set by this. </li>
+  <li> `stroke`: This can be be explained by `enginesize`. </li>
+  <li> `peakrpm`: This can be explained by `horsepower`. </li>
+  <li> `cyclindernumber`: This can be be explained by `enginesize`. </li>
+  <li> `boreratio`: This can be be explained by `enginesize`. </li>
+  <li> `doornumber`: This is explained by `carbody`. </li>
+  <li> `enginelocation`: There are only three cars in the data set with rear engines and they have other similar traits</li>
+  <li> `X`: Same as `car_ID` </li>
+</ul>
+
+## Data Engineering
+
+### Engineering
+
+```{r}
+cars3 <- cars2 %>%
+  separate(CarName, into = c("make", "model"), sep = " ") %>%
+  mutate(
+    make = fixMake(make),
+    projectedVolume = carwidth * carlength * carheight,
+    avgMPG = (citympg + highwaympg) / 2,
+    logHP = log10(horsepower),
+    logPrice = log10(price)
+  )
+```
+
+<ul>
+  <li>`make`: The manufacturer of the vechicle created by separating `CarName`. (Categorical)</li>
+  <li>`model`: The manufacturer of the vechicle created by separating `CarName`. (Categorical)</li>
+  <li>`projectedVolume`: The projected volume of the car created by $carwidth \cdot carlength \cdot carheight $. (Numeric)</li>
+  <li>`avgMPG`: The average of `citympg` and `highwaymph`. (Numeric)</li>
+  <li>`logHp`: The number of digits in the `horsepower`. (Numeric)</li>
+  <li>`logPrice`: The number of digits in the `price`. (Numeric)</li>
+</ul>
+
+### Cleaning
+
+```{r}
+cars4 <- cars3 %>%
+  select(
+    -model,
+    -citympg,
+    -highwaympg,
+    -carwidth,
+    -carlength,
+    -carheight,
+    -horsepower
+  ) %>% 
+  mutate(
+    make = as.factor(make),
+    carbody = as.factor(carbody),
+    fueltype = as.factor(fueltype)
+    )
+```
+
+
+<ul>
+  <li>`CarName`: Split into `make` and `model`.</li>
+  <li>`model`: This is not important information.</li>
+  <li>`citympg`: `citympg` is now explained in `avgMPG`</li>
+  <li>`highwaymph`: `highwaymph` is now explained in `avgMPG`</li>
+  <li>`carwidth`: `carwidth` is now explained in `projectedVolume`</li>
+  <li>`carlength`: `carlength` is now explained in `projectedVolume`</li>
+  <li>`carheight`: `carheight` is now explained in `projectedVolume`</li>
+  <li>`horsepower`: `horsepower` is now explained in `logHP`</li>
+  <li>`cylindernumber`: `cylindernumber` is now explained in `hpPerCyl`</li>
+</ul>
+
+
+## Visualization
+
+### Figure 1: Size of Car vs Price
+
+```{r}
+model1 <- lm(logPrice ~ enginesize, data = cars4)
+
+df1 <- buildIntervals(cars4, model1)
+
+ggplot(df1, aes(x = enginesize)) +
+  geom_point(aes(y = price), alpha = 0.5) +
+  geom_ribbon(aes(ymin = 10^confLwr, ymax = 10^confUpr), fill = "yellow", alpha = 0.4) +
+  geom_line(aes(y = 10^fit), color = "#3366FF", size = 0.75) +
+  geom_line(aes(y = 10^confLwr), linetype = "dashed", size = 0.75) +
+  geom_line(aes(y = 10^confUpr), linetype = "dashed", size = 0.75) +
+  geom_line(aes(y = 10^predictLwr), linetype = "dashed", color = "red", size = 0.75) +
+  geom_line(aes(y = 10^predictUpr), linetype = "dashed", color = "red", size = 0.75) +
+  labs(
+    title = "Figure 1: Size of Car vs Price",
+    x = bquote("Size of Car" ~ ("in"^3)),
+    y = "Price ($)",
+  )
+
+slope1 <- round(summary(model1)$coefficients[2, 1], 3)
+intercept1 <- round(summary(model1)$coefficients[1, 1], 3)
+```
+
+`Figure 1` shows that the `price` of the car can be explained by the size of the car's (`enginesize`) using the formula $price = 10^{`r slope1` \cdot enginesize} \cdot `r 10^intercept1`$.
+
+### Figure 2: Car Weight vs Price
+
+```{r}
+model2 <- lm(logPrice ~ curbweight, data = cars4)
+
+df2 <- buildIntervals(cars4, model2)
+
+ggplot(df2, aes(x = curbweight)) +
+  geom_point(aes(y = price), alpha = 0.5) +
+  geom_ribbon(aes(ymin = 10^confLwr, ymax = 10^confUpr), fill = "yellow", alpha = 0.4) +
+  geom_line(aes(y = 10^fit), color = "#3366FF", size = 0.75) +
+  geom_line(aes(y = 10^confLwr), linetype = "dashed", size = 0.75) +
+  geom_line(aes(y = 10^confUpr), linetype = "dashed", size = 0.75) +
+  geom_line(aes(y = 10^predictLwr), linetype = "dashed", color = "red", size = 0.75) +
+  geom_line(aes(y = 10^predictUpr), linetype = "dashed", color = "red", size = 0.75) +
+  labs(
+    title = "Figure 2: Car Weight vs Price",
+    x = "Car Weight (lbs)",
+    y = "Price ($)",
+  )
+
+slope2 <- round(summary(model2)$coefficients[2, 1], 4)
+intercept2 <- round(summary(model2)$coefficients[1, 1], 4)
+```
+`Figure 2` shows that the `price` of the car can also be explained by the weight of the car (`curbweight`) using the formula $price = 10^{`r slope2` \cdot curbweight} \cdot `r 10^intercept2`$.
+
+### Figure 3: Engine Size vs Weight of Car
+
+```{r}
+model3 <- lm(curbweight ~ enginesize, data = cars4)
+
+df3 <- buildIntervals(cars4, model3)
+
+ggplot(df3, aes(x = enginesize)) +
+  geom_point(aes(y = curbweight), alpha = .75) +
+  geom_smooth(aes(y = curbweight), method = lm, fill = "yellow") +
+  geom_line(aes(y = confLwr), linetype = "dashed") +
+  geom_line(aes(y = confUpr), linetype = "dashed") +
+  geom_line(aes(y = predictLwr), linetype = "dashed", color = "red") +
+  geom_line(aes(y = predictUpr), linetype = "dashed", color = "red") +
+  labs(
+    title = "Figure 3: Engine Size vs Weight of Car",
+    x = "Weight of Car (lbs)",
+    y = "Engine Size (CID)",
+  )
+
+slope3 <- round(summary(model3)$coefficients[2, 1], 3)
+intercept3 <- round(summary(model3)$coefficients[1, 1], 3)
+```
+  
+`Figure 3` shows that the size of the car's (`enginesize`) can be explained by the weight of the car (`curbweight`) using the formula $enginesize = `r slope3` \cdot curbweight + `r intercept3`$. This means that `curbweight` and `enginesize` are colinear and only one should be used in the final model. Since `Figure 3` show that `price` is better explained by `curbweight`; `enginesize` will be thrown out of the data later on in favor of `curbweight`.
+
+### Figure 4: Log Horsepower vs Price
+
+```{r}
+model4 <- lm(logPrice ~ logHP, data = cars4)
+
+df4 <- buildIntervals(cars4, model4)
+
+ggplot(df4, aes(x = logHP)) +
+  geom_point(aes(y = price), alpha = 0.5) +
+  geom_ribbon(aes(ymin = 10^confLwr, ymax = 10^confUpr), fill = "yellow", alpha = 0.4) +
+  geom_line(aes(y = 10^fit), color = "#3366FF", size = 0.75) +
+  geom_line(aes(y = 10^confLwr), linetype = "dashed", size = 0.75) +
+  geom_line(aes(y = 10^confUpr), linetype = "dashed", size = 0.75) +
+  geom_line(aes(y = 10^predictLwr), linetype = "dashed", color = "red", size = 0.75) +
+  geom_line(aes(y = 10^predictUpr), linetype = "dashed", color = "red", size = 0.75) +
+  labs(
+    title = "Figure 4: Horsepower vs Price",
+    x = "Log Horsepower",
+    y = "Price ($)",
+  )
+
+slope4 <- round(summary(model3)$coefficients[2, 1], 3)
+intercept4 <- round(summary(model3)$coefficients[1, 1], 3)
+```
+
+`Figure 4` shows that the `price` of the car can also be explained by log of horsepower (`logHP`) using the formula $price = `r slope4` \cdot 10^{logHP} + `r intercept4`$.
+
+### Figure 5: Car Make vs Average Price
+
+```{r}
+ggplot(df4, aes(x = fct_reorder(make, price, .fun = mean), y = price)) +
+  geom_bar(stat = "summary", fun = "mean", fill = "#00bfc4") +
+  labs(
+    title = "Figure 5: Car Make vs Average Price",
+    x = "Car Make",
+    y = "Average price",
+  ) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+```
+
+`Figure 5` show the average price varies greatly based on the `make` of the car. This means when that `make` should be considered in our final model.
+
+### Figure 6: Car Body vs Average Price
+
+```{r}
+ggplot(cars4, aes(x = fct_reorder(carbody, price, .fun = mean), y = price)) +
+  geom_bar(stat = "summary", fun = "mean", fill = "#c77cff") +
+  labs(
+    title = "Figure 6: Car Body vs Average Price",
+    x = "Car Body",
+    y = "Average Price ($)",
+  ) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+```
+
+`Figure 6` show the average price varies based on the body of the car (`carbody`). This means when that `carbody` could be considered in our final model.
+
+### Figure 7: Fuel Type vs Average Price
+
+```{r}
+ggplot(cars4, aes(x = fct_reorder(fueltype, price, .fun = mean), y = price, fill = fueltype)) +
+  geom_bar(stat = "summary", fun = "mean", show.legend = FALSE) +
+  labs(
+    title = "Figure 7: Fuel Type vs Price",
+    x = "Fuel Type",
+    y = "Average Price ($)",
+  ) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+```
+
+`Figure 7` show the average price varies based on the fuel type of the car (`fueltype`). This means when that `fueltype` could be considered in our final model.
+
+# Task 3
+
+## Building Model
+
+```{r}
+cars5 <- cars4 %>%
+  select(-enginesize)
+
+testModel <- lm(logPrice ~ . - car_ID - price, data = cars5)
+bestSelect <- ols_step_best_subset(testModel)
+```
+
+<p> To start off we dropped the `enginesize` data because of our observation in `Figure 3`. After dropping `enginesize` we can create a model that includes all the data we did not remove. This model excludes `car_ID` and `price`. Now a `ols_step_best_subset` can be ran on the model. Now an `ols_step_best_subset` will create subset models of all our variables and output the best model for each number of variables in the formula. The looking at the result we can determined that the best number of are five; the variables being listed below.
+<ul>
+<li>`curbweight`: <a href="#figure-2-car-weight-vs-price">`Figure 2`</a></li>
+<li>`logHP`: <a href="#figure-4-log-horsepower-vs-price">`Figure 4`</a></li>
+<li>`make`: <a href="#figure-5-car-make-vs-average-price">`Figure 5`</a></li> 
+<li>`carbody`: <a href="#figure-6-car-body-vs-average-price">`Figure 6`</a></li>
+<li>`fueltype`: <a href="#figure-7-fuel-type-vs-average-price">`Figure 7`</a></li>
+</ul>
+</p>
+
+## Model
+
+```{r}
+finalModel <- lm(logPrice ~ curbweight + logHP + make + carbody + fueltype, data = cars5)
+finalSummary <- summary(finalModel)
+
+coefficients <- round(finalSummary$coefficients[, 1], 4)
+
+numCoe <- length(coefficients)
+```
+
+<p> After finding these variables we can create a model for them. Using the newly created model we can find the following function: </p>
+
+<p> $$ price = `r 10^coefficients[3]` \cdot horsepower +  10^{`r coefficients[2]` \cdot {curbweight}} \\~\\ \cdot 10^{`r coefficients[4]` \cdot 1_{make = Audi}} \cdot 10^{`r coefficients[5]` \cdot 1_{make = BMW}} \\~\\ \cdot 10^{`r coefficients[6]` \cdot 1_{make = Buick}}   \cdot 10^{`r coefficients[7]` \cdot 1_{make = Chevrolet}} \\~\\   \cdot 10^{`r coefficients[8]` \cdot 1_{make = Dodge}}   \cdot 10^{`r coefficients[9]` \cdot 1_{make = Honda}} \\~\\   \cdot 10^{`r coefficients[10]` \cdot 1_{make = Isuzu}}   \cdot 10^{`r coefficients[11]` \cdot 1_{make = Jaguar}} \\~\\   \cdot 10^{`r coefficients[12]` \cdot 1_{make = Mazda}}   \cdot 10^{`r coefficients[13]` \cdot 1_{make = Mercury}} \\~\\   \cdot 10^{`r coefficients[14]` \cdot 1_{make = Mitsubishi}}   \cdot 10^{`r coefficients[15]` \cdot 1_{make = Nissan}} \\~\\   \cdot 10^{`r coefficients[16]` \cdot 1_{make = Peugeot}}   \cdot 10^{`r coefficients[17]` \cdot 1_{make = Plymouth= yes}} \\~\\   \cdot 10^{`r coefficients[18]` \cdot 1_{make = Porsche= yes}}   \cdot 10^{`r coefficients[19]` \cdot 1_{make = Renault= yes}} \\~\\   \cdot 10^{`r coefficients[20]` \cdot 1_{make = Saab}}    \cdot 10^{`r coefficients[21]` \cdot 1_{make = Subaru}} \\~\\   \cdot 10^{`r coefficients[22]` \cdot 1_{make = Toyota}}   \cdot 10^{`r coefficients[23]` \cdot 1_{make = Volkswagen}} \\~\\   \cdot 10^{`r coefficients[24]` \cdot 1_{make = Volvo}}   \cdot 10^{`r coefficients[25]` \cdot 1_{carbody = hardtop}} \\~\\   \cdot 10^{`r coefficients[26]` \cdot 1_{carbody = hatchback}}   \cdot 10^{`r coefficients[27]` \cdot 1_{carbody = sedan}} \\~\\   \cdot 10^{`r coefficients[28]` \cdot 1_{carbody = wagon}}   \cdot 10^{`r coefficients[29]` \cdot 1_{fueltype = gas}}  \\~\\    \cdot 10^{`r coefficients[1]`}$$ </p> 
+
+### Summary
+
+```{r}
+minWeight <- min(cars$curbweight)
+maxWeight <- max(cars$curbweight)
+weightExample <- round((10^coefficients[2])^2250, 4)
+meanIncrease <- round(mean((10^coefficients[2])^cars$curbweight), 4)
+
+minMake <- round(10^min(coefficients[4:23]), 4)
+maxMake <- round(10^max(coefficients[4:23]), 4)
+
+minBody <- round(10^min(coefficients[24:28]), 4)
+maxBody <- round(10^max(coefficients[24:28]), 4)
+```
+
+
+<p>Let's take a deeper look at each variable affects the model.</p>
+<ul>
+<li>`horsepower`: Every time the `horsepower` increases by $1$ the price increases by $`r 10^coefficients[3]`$.</li>
+<li>`curbweight`: The `price` of the car is multiplied by $`r round(10^coefficients[2],4)`^{curbweight}$. For example if you have car that weights $2250$ lbs then the price multiplied by $`r weightExample`$; because cars weight range from $`r minWeight`$ to $`r maxWeight`$ the average amount the price is multiplied by is $`r meanIncrease`$. This is important because `curbweight` is about tripling the `price` on average. </li> 
+<li>`make`: The `price`of increases or decreases based on the `make`. It does this by multiplying the `price` by $`r minMake`$ a the lowest and $`r maxMake`$ at the highest. `make` is important because it can slightly lower the `price` or greatly increase the `price`. </li>
+<li>`carbody`: Multiplies `price` by $`r minBody`$ a the lowest and $`r maxBody`$ at the highest. </li>
+<li>`fueltype`: If the `fueltype` is gas then the `price` is multiply by $`r round(10^coefficients[29],4)`$.</li>
+
+Now that we understand the model a little more let take a look at how well our model fits the data.
+
+```{r}
+corCoff <- round(cor(cars5$price, 10^finalModel$fitted.values), 4)
+carRMSE <- round(RMSE(10^finalModel$fitted.values, cars5$price), 4)
+```
+
+<ul>
+<li>Correlation Coefficient: `r corCoff`</li> 
+<li>RMSE: `r carRMSE`</li> 
+</ul>
+
+The correlation coefficient and RMSE look pretty good so lets take a look at the Residuals vs Fitted of the model and the Q-Q plot of the model.
+```{r}
+autoplot(finalModel,1:2)
+```
+
+Looking at the Residuals vs Fitted above the data look pretty random which is good, but the Q-Q shows that the model is pretty good towards the mean price, but it not great at estimating Very High or Very Low prices.
+
+# Task 4
+
+Now that we create a model we can use it to predict the prices for the cars without values.
+
+```{r}
+cars6 <- cars %>%
+  filter(is.na(price)) %>%
+  select(
+    -X,
+    -wheelbase,
+    -enginetype,
+    -fuelsystem,
+    -symboling,
+    -stroke,
+    -peakrpm,
+    -boreratio,
+    -doornumber,
+    -cylindernumber,
+    -enginelocation
+  ) %>%
+  separate(CarName, into = c("make", "model"), sep = " ") %>%
+  mutate(
+    make = fixMake(make),
+    projectedVolume = carwidth * carlength * carheight,
+    avgMPG = (citympg + highwaympg) / 2,
+    logHP = log10(horsepower),
+    logPrice = log10(price)
+  ) %>%
+  select(
+    -model,
+    -citympg,
+    -highwaympg,
+    -carwidth,
+    -carlength,
+    -carheight,
+    -horsepower
+  )
+
+cars7 <- buildIntervals(cars6, finalModel) %>%
+  select(car_ID, fit, predictLwr, predictUpr) %>%
+  mutate(fit = 10^fit, predictLwr = 10^predictLwr, predictUpr = 10^predictUpr) %>%
+  rename(price = fit, lower = predictLwr, upper = predictUpr)
+```
+
+## Predictions
+
+```{r}
+kable(cars7)
+```
